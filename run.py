@@ -13,6 +13,8 @@ from os import system
 import os
 
 from datasets import get_mnist_dataloaders
+from models import vit_tiny
+from models.vision_transformer import vit_large
 
 # Torch imports 
 import torch
@@ -27,7 +29,6 @@ import torchvision.transforms as transforms
 import torchvision
 
 
-
 CUDA=torch.cuda.is_available()
 
 # Set device
@@ -37,55 +38,12 @@ print(f'Device: {device}')
 # Load dataset
 train_loader, test_loader = get_mnist_dataloaders()
 
-
-class SoftMax_Regression(nn.Module):
-	def __init__(self, in_channels=1, out_channels=10, drop=False, bn=False):
-		super(SoftMax_Regression, self).__init__()
-		self.name = f'SoftMax_Regression - dropout={drop} bn={bn}'
-		self.linear = nn.Linear(28*28, 10) 
-		self.soft_max = nn.Softmax(1)
-		self.drop = drop
-		self.dropout = nn.Dropout(p=0.2)
-		self.bn = bn
-		self.batchnorm = nn.BatchNorm1d(28*28)
-
-	def forward(self, image):
-		a = image.view(-1, 28*28)
-		if self.drop:
-			a = self.dropout(a)
-		if self.bn:
-			a = self.batchnorm(a)
-		a = self.linear(a)
-		a = self.soft_max(a)
-		return a
-		
-class Net(nn.Module):
-	def __init__(self):
-		super(Net, self).__init__()
-		self.name = 'CNN'
-		self.conv1 = nn.Conv2d(3, 6, 5)
-		self.pool = nn.MaxPool2d(2, 2)
-		self.conv2 = nn.Conv2d(6, 16, 5)
-		self.fc1 = nn.Linear(16 * 5 * 5, 120)
-		self.fc2 = nn.Linear(120, 120)
-		self.fc3 = nn.Linear(120, 10)
-
-	def forward(self, x):
-		x = self.pool(F.relu(self.conv1(x)))
-		x = self.pool(F.relu(self.conv2(x)))
-		x = x.view(-1, 16 * 5 * 5)
-		x = F.relu(self.fc1(x))
-		x = F.relu(self.fc2(x))
-		x = self.fc3(x)
-		return x
-
-
 # Hyperparameters
 learning_rate = 0.001
 num_epochs = 10
 
 # Simple configurations
-model = SoftMax_Regression()
+model = vit_large(in_chans=1, num_classes=10)
 
 def train(model):
 	model.to(device=device)
@@ -96,7 +54,7 @@ def train(model):
 	accuracy = 0
 	for epoch in range(num_epochs):
 		system('cls' if os.name == 'nt' else 'clear')
-		print(f'Training {model.name}')
+		print(f'Training {model.__class__.__name__}')
 		print(f'Epoch {epoch}: {accuracy}')
 		for _, (data, targets) in enumerate(tqdm(train_loader)):
 			data = data.to(device=device)
@@ -144,7 +102,7 @@ def model_accuracy(model):
 
 acc_list = train(model)
 system('cls' if os.name == 'nt' else 'clear')
-print(model.name)
+print(model.__class__.__name__)
 for acc in range(len(acc_list)):
 	if acc % 2 == 0:
 		print(f'Epoch {acc+1}: \t{str(acc_list[acc])}')
