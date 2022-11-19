@@ -6,7 +6,15 @@ import utils
 from utils import trunc_normal_
 
 class DINOHead(nn.Module):
-    def __init__(self, in_dim, out_dim, use_bn=False, norm_last_layer=True, nlayers=3, hidden_dim=2048, bottleneck_dim=256):
+    def __init__(self, 
+                in_dim, 
+                out_dim, 
+                use_bn=False, 
+                norm_last_layer=True, 
+                nlayers=3, 
+                hidden_dim=2048, 
+                bottleneck_dim=256, 
+                **kwargs):
         super().__init__()
         nlayers = max(nlayers, 1)
         if nlayers == 1:
@@ -28,6 +36,7 @@ class DINOHead(nn.Module):
         self.last_layer.weight_g.data.fill_(1)
         if norm_last_layer:
             self.last_layer.weight_g.requires_grad = False
+        self.last_norm = nn.BatchNorm1d(out_dim, affine=False, **kwargs)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -48,15 +57,7 @@ class iBOTHead(DINOHead):
                  nlayers=3, hidden_dim=2048, bottleneck_dim=256, norm_last_layer=True, 
                  shared_head=False, **kwargs):
         
-        super(iBOTHead, self).__init__(*args,
-                                        norm=norm,
-                                        act=act,
-                                        last_norm=last_norm,
-                                        nlayers=nlayers,
-                                        hidden_dim=hidden_dim,
-                                        bottleneck_dim=bottleneck_dim,
-                                        norm_last_layer=norm_last_layer, 
-                                        **kwargs)
+        super(iBOTHead, self).__init__(*args, **kwargs)
 
         if not shared_head:
             if bottleneck_dim > 0:
@@ -68,7 +69,7 @@ class iBOTHead(DINOHead):
                 self.mlp2 = nn.Linear(hidden_dim, patch_out_dim)
                 self.last_layer2 = None
 
-            self.last_norm2 = self._build_norm(last_norm, patch_out_dim, affine=False, **kwargs)
+            self.last_norm2 = nn.BatchNorm1d(patch_out_dim, affine=False, **kwargs)
         else:
             if bottleneck_dim > 0:
                 self.last_layer2 = self.last_layer
