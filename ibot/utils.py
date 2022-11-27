@@ -7,12 +7,7 @@
 """
 Mostly copy-paste from torchvision references or other public repos like DETR:
 https://github.com/facebookresearch/detr/blob/master/util/misc.py
-or Ibot:
-https://github.com/bytedance/ibot/tree/da316d82636a7a7356835ef224b13d5f3ace0489
 """
-
-# Prob dont need to call 
-# import argparse
 
 import os
 import sys

@@ -81,7 +81,7 @@ def model_accuracy(model):
 	total = 0
 	model.eval()
 	with torch.no_grad():
-		for images, labels in train_loader:
+		for images, labels in test_loader:
 			images = images.to(device=device)
 			labels = labels.to(device=device)
 
