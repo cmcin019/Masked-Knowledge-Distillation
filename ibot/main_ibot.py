@@ -583,7 +583,7 @@ class iBOTLoss(nn.Module):
         # print(rk_t1_d.shape)
 
         teacher_cls_c = teacher_cls_c.detach().chunk(self.ngcrops)
-        print(teacher_cls_c[0] )
+        # print(teacher_cls_c[0] == teacher_cls_c[1])
         teacher_patch_c = F.softmax((teacher_patch - self.center2) / temp2, dim=-1)
         teacher_patch_c = teacher_patch_c.detach().chunk(self.ngcrops)
 
@@ -732,15 +732,15 @@ class DataAugmentationiBOT(object):
         # transformation for the first global crop
         self.global_transfo1 = transforms.Compose([
             # transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            # flip_and_color_jitter,
-            # utils.GaussianBlur(1.0),
+            flip_and_color_jitter,
+            utils.GaussianBlur(1.0),
             normalize,
         ])
         # transformation for the rest of global crops
         self.global_transfo2 = transforms.Compose([
             # transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            # flip_and_color_jitter,
-            # utils.GaussianBlur(0.1),
+            flip_and_color_jitter,
+            utils.GaussianBlur(0.1),
             # utils.Solarization(0.2),
             normalize,
         ])
@@ -748,7 +748,7 @@ class DataAugmentationiBOT(object):
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
             # transforms.RandomResizedCrop(16, scale=local_crops_scale, interpolation=Image.BICUBIC),
-            # flip_and_color_jitter,
+            flip_and_color_jitter,
             # utils.GaussianBlur(p=0.5),
             normalize,
         ])
