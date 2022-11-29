@@ -524,7 +524,13 @@ class iBOTLoss(nn.Module):
             np.ones(nepochs - warmup_teacher_temp_epochs - mim_start_epoch) * teacher_temp2
         ))
 
-    def _vanilla_loss(self, epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask):
+    def _vanilla_loss(self, epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask):
+        # [CLS] and patch for global patches
+        student_cls = student_cls / self.student_temp
+        student_cls_c = student_cls.chunk(self.ncrops)
+        student_patch = student_patch / self.student_temp
+        student_patch_c = student_patch.chunk(self.ngcrops)
+       
         temp = self.teacher_temp_schedule[epoch]
         temp2 = self.teacher_temp2_schedule[epoch]
         teacher_cls_c = F.softmax((teacher_cls - self.center) / temp, dim=-1)
@@ -570,7 +576,13 @@ class iBOTLoss(nn.Module):
         return d
 
 
-    def _rk_dist_loss(self, epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask):
+    def _rk_dist_loss(self, epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask):
+        # [CLS] and patch for global patches
+        student_cls = student_cls / self.student_temp
+        student_cls_c = student_cls.chunk(self.ncrops)
+        student_patch = student_patch / self.student_temp
+        student_patch_c = student_patch.chunk(self.ngcrops)
+        
         temp = self.teacher_temp_schedule[epoch]
         temp2 = self.teacher_temp2_schedule[epoch]
         teacher_cls_c = F.softmax((teacher_cls - self.center) / temp, dim=-1)
@@ -590,54 +602,76 @@ class iBOTLoss(nn.Module):
         total_loss1, n_loss_terms1 = 0, 0
         total_loss2, n_loss_terms2 = 0, 0
 
-
         # half = len(teacher_cls_c) // 2
 
+        # print(student_mask[0].flatten(-2, -1).float())
+        # print(student_mask[0].flatten(-2, -1).sum(dim=-1).clamp(min=1.0))
 
-        # torch.Size([16, 8192])  # when crop num = 4
-        # print(teacher_cls_c[0].shape)
-
-        td_cls_1 = torch.sub(teacher_cls_c[0], teacher_cls_c[1]).pow(2)
-        td_cls_2 = torch.sub(teacher_cls_c[2], teacher_cls_c[3]).pow(2)
-
-        norm_td_cls_1 = F.normalize(td_cls_1, p=2, dim=-1)
-        norm_td_cls_2 = F.normalize(td_cls_2, p=2, dim=-1)
-
-        norms_td_cls = (norm_td_cls_1, norm_td_cls_2)
-
-        td_patch_1 = torch.sub(teacher_patch_c[0], teacher_patch_c[1]).pow(2)
-        td_patch_2 = torch.sub(teacher_patch_c[2], teacher_patch_c[3]).pow(2)
-
-        norm_td_patch_1 = F.normalize(td_patch_1, p=2, dim=-1)
-        norm_td_patch_2 = F.normalize(td_patch_2, p=2, dim=-1)
-
-        norms_td_patch = (norm_td_patch_1, norm_td_patch_2)
-
-        # print(norm_td_cls_1.shape)
+        print(student_cls.shape)
+        print(student_patch.shape)
+        print(student_mask[0].shape)
+        print(teacher_cls.shape)
+        print(teacher_patch.shape)
 
 
-        # rk_t1_d = self.pdist(teacher_cls_c[:half], squared=False)
-        # rk_t2_d = self.pdist(teacher_cls_c[half:], squared=False)
+        # TODO: Method combining all
+        s_cls_d= self.pdist(student_cls, squared=False)
+        s_patch_d = self.pdist(student_patch, squared=False)
+        s_mask_d = self.pdist(student_mask, squared=False) # This does not make sense 
 
-        # print(rk_t1_d.shape)
-        # print(teacher_cls_c[0].shape)
+        t_cls_d= self.pdist(teacher_cls, squared=False)
+        t_patch_d = self.pdist(teacher_patch, squared=False)
+
+        return total_loss1, total_loss2
 
 
-        sd_cls_1 = torch.sub(student_cls_c[0], student_cls_c[1]).pow(2)
-        sd_cls_2 = torch.sub(student_cls_c[2], student_cls_c[3]).pow(2)
+        # # TODO: Method combining pairs
+        # #         This way will allow for the criss cross loss calculation
+        # #         Seen in the original iBOT method
+        # # torch.Size([16, 8192])  # when crop num = 4
+        # # print(teacher_cls_c[0].shape)
 
-        norm_sd_cls_1 = F.normalize(sd_cls_1, p=2, dim=-1)
-        norm_sd_cls_2 = F.normalize(sd_cls_2, p=2, dim=-1)
+        # td_cls_1 = torch.sub(teacher_cls_c[0], teacher_cls_c[1]).pow(2)
+        # td_cls_2 = torch.sub(teacher_cls_c[2], teacher_cls_c[3]).pow(2)
 
-        norms_sd_cls = (norm_sd_cls_1, norm_sd_cls_2)
+        # norm_td_cls_1 = F.normalize(td_cls_1, p=2, dim=-1)
+        # norm_td_cls_2 = F.normalize(td_cls_2, p=2, dim=-1)
 
-        sd_patch_1 = torch.sub(student_patch_c[0], student_patch_c[1]).pow(2)
-        sd_patch_2 = torch.sub(student_patch_c[2], student_patch_c[3]).pow(2)
+        # norms_td_cls = (norm_td_cls_1, norm_td_cls_2)
 
-        norm_sd_patch_1 = F.normalize(sd_patch_1, p=2, dim=-1)
-        norm_sd_patch_2 = F.normalize(sd_patch_2, p=2, dim=-1)
+        # td_patch_1 = torch.sub(teacher_patch_c[0], teacher_patch_c[1]).pow(2)
+        # td_patch_2 = torch.sub(teacher_patch_c[2], teacher_patch_c[3]).pow(2)
 
-        norms_sd_patch = (norm_sd_patch_1, norm_sd_patch_2)
+        # norm_td_patch_1 = F.normalize(td_patch_1, p=2, dim=-1)
+        # norm_td_patch_2 = F.normalize(td_patch_2, p=2, dim=-1)
+
+        # norms_td_patch = (norm_td_patch_1, norm_td_patch_2)
+
+        # # print(norm_td_cls_1.shape)
+
+
+        # # rk_t1_d = self.pdist(teacher_cls_c[:half], squared=False)
+        # # rk_t2_d = self.pdist(teacher_cls_c[half:], squared=False)
+
+        # # print(rk_t1_d.shape)
+        # # print(teacher_cls_c[0].shape)
+
+
+        # sd_cls_1 = torch.sub(student_cls_c[0], student_cls_c[1]).pow(2)
+        # sd_cls_2 = torch.sub(student_cls_c[2], student_cls_c[3]).pow(2)
+
+        # norm_sd_cls_1 = F.normalize(sd_cls_1, p=2, dim=-1)
+        # norm_sd_cls_2 = F.normalize(sd_cls_2, p=2, dim=-1)
+
+        # norms_sd_cls = (norm_sd_cls_1, norm_sd_cls_2)
+
+        # sd_patch_1 = torch.sub(student_patch_c[0], student_patch_c[1]).pow(2)
+        # sd_patch_2 = torch.sub(student_patch_c[2], student_patch_c[3]).pow(2)
+
+        # norm_sd_patch_1 = F.normalize(sd_patch_1, p=2, dim=-1)
+        # norm_sd_patch_2 = F.normalize(sd_patch_2, p=2, dim=-1)
+
+        # norms_sd_patch = (norm_sd_patch_1, norm_sd_patch_2)
 
 
         for q in range(len(norms_td_cls)):
@@ -684,14 +718,12 @@ class iBOTLoss(nn.Module):
 
         # [CLS] and patch for global patches
         student_cls = student_cls / self.student_temp
-        student_cls_c = student_cls.chunk(self.ncrops)
         student_patch = student_patch / self.student_temp
-        student_patch_c = student_patch.chunk(self.ngcrops)
 
         # total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
         # print(total_loss1.detach(), total_loss2.detach())
         # total_loss1, total_loss2 = self._rk_angle_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
-        total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
+        total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
         # print(total_loss1.detach(), total_loss2.detach())
 
         total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2)
