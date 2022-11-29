@@ -666,32 +666,51 @@ class MultiCropWrapper(nn.Module):
 
     def forward(self, x, mask=None, return_backbone_feat=False, 
                 **kwargs):
+        # x is halh a batch
+        # mask is None  (teacher)
+        #       or half batch  (student)
         # convert to list
         if not isinstance(x, list):
             x = [x]
             mask = [mask] if mask is not None else None
+
+        # global_crops_number
         idx_crops = torch.cumsum(torch.unique_consecutive(
             torch.tensor([inp.shape[-1] for inp in x]),
             return_counts=True,
         )[1], 0)
+
         start_idx = 0
         for end_idx in idx_crops:
             inp_x = torch.cat(x[start_idx: end_idx])
+            # print(x[0].shape)
+            # print(inp_x.shape)
 
             if mask is not None:
                 inp_m = torch.cat(mask[start_idx: end_idx])
                 kwargs.update(dict(mask=inp_m))
-
-            _out = self.backbone(inp_x, **kwargs)
+                
+            # print(self.backbone.__class__.__name__)
+            _out = self.backbone(inp_x, **kwargs) # Vision transformer
             if start_idx == 0:
                 output = _out
             else:
                 output = torch.cat((output, _out))
             start_idx = end_idx
+
+        # torch.Size([32, 5, 384])
+        # print(output.shape) 
+
         # Run the head forward on the concatenated features.
-        output_ = self.head(output)
+
+        # print(self.head.__class__.__name__)
+        output_ = self.head(output) # iBOT Head
         if return_backbone_feat:
             return output, output_
+        # # torch.Size([32, 8192])
+        # print(output_[0].shape)
+        # # torch.Size([32, 4, 8192])
+        # print(output_[1].shape)
         return output_
 
 

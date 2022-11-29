@@ -40,7 +40,7 @@ def get_args_parser():
                  'swin_tiny','swin_small', 'swin_base', 'swin_large'],
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
-    parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
+    parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
@@ -127,7 +127,7 @@ def get_args_parser():
     parser.add_argument('--drop_path', type=float, default=0.1, help="""Drop path rate for student network.""")
 
     # Multi-crop parameters
-    parser.add_argument('--global_crops_number', type=int, default=2, help="""Number of global
+    parser.add_argument('--global_crops_number', type=int, default=4, help="""Number of global
         views to generate. Default is to use two global crops. """)
     parser.add_argument('--global_crops_scale', type=float, nargs='+', default=(0.14, 1.),
         help="""Scale range of the cropped image before resizing, relatively to the origin image.
@@ -224,8 +224,14 @@ def train_ibot(args):
     else:
         print(f"Unknow architecture: {args.arch}")
 
+    # print(student)
+    # print(teacher)
+    # return 0
+
     # multi-crop wrapper handles forward with inputs of different resolutions
-    student = utils.MultiCropWrapper(student, iBOTHead(
+    student = utils.MultiCropWrapper(
+        student, 
+        iBOTHead(
         embed_dim,
         args.out_dim,
         patch_out_dim=args.patch_out_dim,
@@ -268,6 +274,10 @@ def train_ibot(args):
         p.requires_grad = False
     print(f"Student and Teacher are built: they are both {args.arch} network.")
 
+    # print(student)
+    # print(teacher)
+    # return 0
+    
     # ============ preparing loss ... ============
     same_dim = args.shared_head or args.shared_head_teacher
     ibot_loss = iBOTLoss(
@@ -514,23 +524,7 @@ class iBOTLoss(nn.Module):
             np.ones(nepochs - warmup_teacher_temp_epochs - mim_start_epoch) * teacher_temp2
         ))
 
-    def forward(self, student_output, teacher_output, student_local_cls, student_mask, epoch):
-        """
-        Cross-entropy between softmax outputs of the teacher and student networks.
-        """
-        student_cls, student_patch = student_output
-        teacher_cls, teacher_patch = teacher_output
-        
-        if student_local_cls is not None:
-            student_cls = torch.cat([student_cls, student_local_cls])
-
-        # [CLS] and patch for global patches
-        student_cls = student_cls / self.student_temp
-        student_cls_c = student_cls.chunk(self.ncrops)
-        student_patch = student_patch / self.student_temp
-        student_patch_c = student_patch.chunk(self.ngcrops)
-        
-        # teacher centering and sharpening
+    def _vanilla_loss(self, epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask):
         temp = self.teacher_temp_schedule[epoch]
         temp2 = self.teacher_temp2_schedule[epoch]
         teacher_cls_c = F.softmax((teacher_cls - self.center) / temp, dim=-1)
@@ -555,6 +549,151 @@ class iBOTLoss(nn.Module):
             
         total_loss1 = total_loss1 / n_loss_terms1 * self.lambda1
         total_loss2 = total_loss2 / n_loss_terms2 * self.lambda2
+
+        return total_loss1, total_loss2
+
+    # From https://github.com/lenscloth/RKD/blob/0a6c3c0c190722d428322bf71703c0ae86c25242/metric/utils.py#L6
+    def pdist(self, e, squared=False, eps=1e-12):
+        e_square = e.pow(2).sum(dim=1)
+        prod = e @ e.t()
+        res = (e_square.unsqueeze(1) + e_square.unsqueeze(0) - 2 * prod).clamp(min=eps)
+
+        if not squared:
+            res = res.sqrt()
+
+        res = res.clone()
+        res[range(len(e)), range(len(e))] = 0
+
+        mean_td = res[res>0].mean()
+        d = res / mean_td
+
+        return d
+
+
+    def _rk_dist_loss(self, epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask):
+        temp = self.teacher_temp_schedule[epoch]
+        temp2 = self.teacher_temp2_schedule[epoch]
+        teacher_cls_c = F.softmax((teacher_cls - self.center) / temp, dim=-1)
+
+        # torch.Size([64, 8192])
+        # print(teacher_cls_c.shape)
+
+        # rk_t1_d = self.pdist(teacher_cls_c, squared=False)
+        # rk_t2_d = self.pdist(teacher_cls_c[2:], squared=False)
+        # print(rk_t1_d.shape)
+
+        teacher_cls_c = teacher_cls_c.detach().chunk(self.ngcrops)
+        print(teacher_cls_c[0] )
+        teacher_patch_c = F.softmax((teacher_patch - self.center2) / temp2, dim=-1)
+        teacher_patch_c = teacher_patch_c.detach().chunk(self.ngcrops)
+
+        total_loss1, n_loss_terms1 = 0, 0
+        total_loss2, n_loss_terms2 = 0, 0
+
+
+        # half = len(teacher_cls_c) // 2
+
+
+        # torch.Size([16, 8192])  # when crop num = 4
+        # print(teacher_cls_c[0].shape)
+
+        td_cls_1 = torch.sub(teacher_cls_c[0], teacher_cls_c[1]).pow(2)
+        td_cls_2 = torch.sub(teacher_cls_c[2], teacher_cls_c[3]).pow(2)
+
+        norm_td_cls_1 = F.normalize(td_cls_1, p=2, dim=-1)
+        norm_td_cls_2 = F.normalize(td_cls_2, p=2, dim=-1)
+
+        norms_td_cls = (norm_td_cls_1, norm_td_cls_2)
+
+        td_patch_1 = torch.sub(teacher_patch_c[0], teacher_patch_c[1]).pow(2)
+        td_patch_2 = torch.sub(teacher_patch_c[2], teacher_patch_c[3]).pow(2)
+
+        norm_td_patch_1 = F.normalize(td_patch_1, p=2, dim=-1)
+        norm_td_patch_2 = F.normalize(td_patch_2, p=2, dim=-1)
+
+        norms_td_patch = (norm_td_patch_1, norm_td_patch_2)
+
+        # print(norm_td_cls_1.shape)
+
+
+        # rk_t1_d = self.pdist(teacher_cls_c[:half], squared=False)
+        # rk_t2_d = self.pdist(teacher_cls_c[half:], squared=False)
+
+        # print(rk_t1_d.shape)
+        # print(teacher_cls_c[0].shape)
+
+
+        sd_cls_1 = torch.sub(student_cls_c[0], student_cls_c[1]).pow(2)
+        sd_cls_2 = torch.sub(student_cls_c[2], student_cls_c[3]).pow(2)
+
+        norm_sd_cls_1 = F.normalize(sd_cls_1, p=2, dim=-1)
+        norm_sd_cls_2 = F.normalize(sd_cls_2, p=2, dim=-1)
+
+        norms_sd_cls = (norm_sd_cls_1, norm_sd_cls_2)
+
+        sd_patch_1 = torch.sub(student_patch_c[0], student_patch_c[1]).pow(2)
+        sd_patch_2 = torch.sub(student_patch_c[2], student_patch_c[3]).pow(2)
+
+        norm_sd_patch_1 = F.normalize(sd_patch_1, p=2, dim=-1)
+        norm_sd_patch_2 = F.normalize(sd_patch_2, p=2, dim=-1)
+
+        norms_sd_patch = (norm_sd_patch_1, norm_sd_patch_2)
+
+
+        for q in range(len(norms_td_cls)):
+            for v in range(len(norms_sd_cls)):
+                if v == q: # Patch tokens
+                    loss2 = torch.sum(-norms_td_patch[q] * F.log_softmax(norms_sd_patch[v], dim=-1), dim=-1)
+                    mask = student_mask[v].flatten(-2, -1)
+
+                    loss2 = torch.sum(loss2 * mask.float(), dim=-1) / mask.sum(dim=-1).clamp(min=1.0)
+                    total_loss2 += loss2.mean()
+
+                    n_loss_terms2 += 1
+                else: # Class token
+                    loss1 = torch.sum(-norms_td_cls[q] * F.log_softmax(norms_sd_cls[v], dim=-1), dim=-1)
+                    total_loss1 += loss1.mean()
+
+                    n_loss_terms1 += 1
+            
+            
+        total_loss1 = total_loss1 / n_loss_terms1 * self.lambda1
+        total_loss2 = total_loss2 / n_loss_terms2 * self.lambda2
+
+
+
+        return total_loss1, total_loss2
+        
+    def _rk_angle_loss(self, epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask):
+        pass
+
+    def forward(self, student_output, teacher_output, student_local_cls, student_mask, epoch):
+        """
+        Cross-entropy between softmax outputs of the teacher and student networks.
+        """
+        student_cls, student_patch = student_output
+        teacher_cls, teacher_patch = teacher_output
+
+        # # torch.Size([32, 8192]) torch.Size([32, 16, 8192])
+        # print(student_cls.shape, student_patch.shape)
+        # print(teacher_cls.shape, teacher_patch.shape)
+
+
+        if student_local_cls is not None:
+            student_cls = torch.cat([student_cls, student_local_cls])
+
+        # [CLS] and patch for global patches
+        student_cls = student_cls / self.student_temp
+        student_cls_c = student_cls.chunk(self.ncrops)
+        student_patch = student_patch / self.student_temp
+        student_patch_c = student_patch.chunk(self.ngcrops)
+
+        # total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
+        # print(total_loss1.detach(), total_loss2.detach())
+        # total_loss1, total_loss2 = self._rk_angle_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
+        total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
+        # print(total_loss1.detach(), total_loss2.detach())
+
         total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2)
         self.update_center(teacher_cls, teacher_patch)                  
         return total_loss
@@ -592,25 +731,25 @@ class DataAugmentationiBOT(object):
         self.global_crops_number = global_crops_number
         # transformation for the first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            flip_and_color_jitter,
-            utils.GaussianBlur(1.0),
+            # transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            # flip_and_color_jitter,
+            # utils.GaussianBlur(1.0),
             normalize,
         ])
         # transformation for the rest of global crops
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            flip_and_color_jitter,
-            utils.GaussianBlur(0.1),
-            utils.Solarization(0.2),
+            # transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            # flip_and_color_jitter,
+            # utils.GaussianBlur(0.1),
+            # utils.Solarization(0.2),
             normalize,
         ])
         # transformation for the local crops
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
-            flip_and_color_jitter,
-            utils.GaussianBlur(p=0.5),
+            # transforms.RandomResizedCrop(16, scale=local_crops_scale, interpolation=Image.BICUBIC),
+            # flip_and_color_jitter,
+            # utils.GaussianBlur(p=0.5),
             normalize,
         ])
 
@@ -621,7 +760,7 @@ class DataAugmentationiBOT(object):
             crops.append(self.global_transfo2(image))
         for _ in range(self.local_crops_number):
             crops.append(self.local_transfo(image))
-        return crops
+        return crops # List of augmentations
 
 
 if __name__ == '__main__':
