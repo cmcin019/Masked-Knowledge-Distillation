@@ -561,19 +561,20 @@ class iBOTLoss(nn.Module):
     # From https://github.com/lenscloth/RKD/blob/0a6c3c0c190722d428322bf71703c0ae86c25242/metric/utils.py#L6
     def pdist(self, e, squared=False, eps=1e-12):
         e_square = e.pow(2).sum(dim=1)
+        e = F.normalize(e, p=2, dim=-1)
         prod = e @ e.t()
-        res = (e_square.unsqueeze(1) + e_square.unsqueeze(0) - 2 * prod).clamp(min=eps)
+        dist = (e_square.unsqueeze(1) + e_square.unsqueeze(0) - 2 * prod).clamp(min=eps)
 
         if not squared:
-            res = res.sqrt()
+            dist = dist.sqrt()
 
-        res = res.clone()
-        res[range(len(e)), range(len(e))] = 0
+        dist = dist.clone()
+        dist[range(len(e)), range(len(e))] = 0
 
-        mean_td = res[res>0].mean()
-        d = res / mean_td
+        mean_td = dist[dist>0].mean()
+        dist= dist / mean_td
 
-        return d
+        return dist
 
 
     def _rk_dist_loss(self, epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask):
@@ -607,20 +608,47 @@ class iBOTLoss(nn.Module):
         # print(student_mask[0].flatten(-2, -1).float())
         # print(student_mask[0].flatten(-2, -1).sum(dim=-1).clamp(min=1.0))
 
-        print(student_cls.shape)
-        print(student_patch.shape)
-        print(student_mask[0].shape)
-        print(teacher_cls.shape)
-        print(teacher_patch.shape)
+
+        # print(student_cls.shape)
+        # print(student_patch.view(student_patch.size(0), -1).shape)
+        # print(student_mask[0].shape)
+        # print(teacher_cls.shape)
+        # print(teacher_patch.view(teacher_patch.size(0), -1).shape)
 
 
         # TODO: Method combining all
         s_cls_d= self.pdist(student_cls, squared=False)
-        s_patch_d = self.pdist(student_patch, squared=False)
-        s_mask_d = self.pdist(student_mask, squared=False) # This does not make sense 
+        s_patch_d = self.pdist(student_patch.view(student_patch.size(0), -1), squared=False)
+        s_mask = torch.stack(student_mask, dim=0).view(len(student_mask) * student_mask[0].shape[0], -1)
+        s_mask_d = self.pdist(s_mask.float(), squared=False) # This does not make sense 
+
+        # print(student_patch.shape)
+        # print(student_mask[0].shape)
+        # print(s_mask_d.shape)
+
 
         t_cls_d= self.pdist(teacher_cls, squared=False)
-        t_patch_d = self.pdist(teacher_patch, squared=False)
+        t_patch_d = self.pdist(teacher_patch.view(teacher_patch.size(0), -1), squared=False)
+
+        # total_loss1 = F.smooth_l1_loss(t_cls_d, s_cls_d, reduction='mean')
+        # total_loss2 = F.smooth_l1_loss(t_patch_d, s_patch_d, reduction='mean')
+
+        total_loss1 = torch.sum(-t_cls_d * F.log_softmax(s_cls_d, dim=-1), dim=-1).mean() / (len(student_mask) * len(student_mask) )
+        loss2 = torch.sum(-t_patch_d * F.log_softmax(s_patch_d, dim=-1), dim=-1)
+
+        total_loss2 = torch.sum(loss2 * s_mask_d.float(), dim=-1) / s_mask_d.sum(dim=-1).clamp(min=1.0)
+        total_loss2 = total_loss2.mean() / (len(student_mask) * len(student_mask) )
+
+        # print(total_loss1)
+        # print(total_loss2)
+
+        # print(teacher_cls)
+        # print(student_cls)
+        # print(t_cls_d)
+        # print(s_cls_d)
+
+        # print(total_loss1) 
+        # print(total_loss2)
 
         return total_loss1, total_loss2
 
@@ -720,7 +748,7 @@ class iBOTLoss(nn.Module):
         student_cls = student_cls / self.student_temp
         student_patch = student_patch / self.student_temp
 
-        # total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
+        # total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
         # print(total_loss1.detach(), total_loss2.detach())
         # total_loss1, total_loss2 = self._rk_angle_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
         total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
@@ -763,25 +791,25 @@ class DataAugmentationiBOT(object):
         self.global_crops_number = global_crops_number
         # transformation for the first global crop
         self.global_transfo1 = transforms.Compose([
-            # transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(1.0),
             normalize,
         ])
         # transformation for the rest of global crops
         self.global_transfo2 = transforms.Compose([
-            # transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(0.1),
-            # utils.Solarization(0.2),
+            utils.Solarization(0.2),
             normalize,
         ])
         # transformation for the local crops
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
-            # transforms.RandomResizedCrop(16, scale=local_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(16, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            # utils.GaussianBlur(p=0.5),
+            utils.GaussianBlur(p=0.5),
             normalize,
         ])
 
