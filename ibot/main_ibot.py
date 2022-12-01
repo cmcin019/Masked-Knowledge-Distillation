@@ -110,7 +110,7 @@ def get_args_parser():
         help optimization for larger ViT architectures. 0 for disabling.""")
     parser.add_argument('--batch_size_per_gpu', default=16, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
-    parser.add_argument('--epochs', default=10, type=int, help='Number of epochs of training.')
+    parser.add_argument('--epochs', default=20, type=int, help='Number of epochs of training.') # epochs
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
         during which we keep the output layer fixed. Typically doing so during
         the first epoch helps training. Try increasing this value if the loss does not decrease.""")
@@ -347,6 +347,7 @@ def train_ibot(args):
 
     start_time = time.time()
     print("Starting iBOT training!")
+    plot_info = {'loss': [], 'acc': [], 'title':['Vanilla']}
     for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
         data_loader.dataset.set_epoch(epoch)
@@ -354,7 +355,7 @@ def train_ibot(args):
         # ============ training one epoch of iBOT ... ============
         train_stats = train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss,
             data_loader, optimizer, lr_schedule, wd_schedule, momentum_schedule,
-            epoch, fp16_scaler, args)
+            epoch, fp16_scaler, plot_info, args)
 
         # ============ writing logs ... ============
         save_dict = {
@@ -377,7 +378,12 @@ def train_ibot(args):
                 f.write(json.dumps(log_stats) + "\n")
                 # for k, v in train_stats.items():
                 #     writer.add_scalar(k, v, epoch)
-        
+
+
+    utils.save_plot(plot_info['loss'], plot_path, 'Loss', plot_info['title'][0]+'_Loss')
+    utils.save_plot(plot_info['acc'], plot_path, 'Accuracy', plot_info['title'][0]+'_Acc')
+   
+   
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
@@ -385,7 +391,7 @@ def train_ibot(args):
 
 def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loader,
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
-                    fp16_scaler, args):
+                    fp16_scaler, plot_info, args):
     system('cls' if os.name == 'nt' else 'clear')
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
@@ -427,7 +433,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
 
             all_loss = ibot_loss(student_output, teacher_output, student_local_cls, masks, epoch)
             loss = all_loss.pop('loss')
-
+            plot_info['loss'].append(loss.item())
+        
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
             sys.exit(1)
@@ -438,6 +445,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
         pred1 = utils.concat_all_gather(probs1[0].max(dim=1)[1]) 
         pred2 = utils.concat_all_gather(probs2[1].max(dim=1)[1])
         acc = (pred1 == pred2).sum() / pred1.size(0)
+        plot_info['acc'].append(acc.item())
         pred_labels.append(pred1)
         real_labels.append(utils.concat_all_gather(labels.to(pred1.device)))
 
@@ -474,7 +482,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
             metric_logger.update(**{key: value.item()})
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
-        metric_logger.update(acc=acc)
+        metric_logger.update(acc=acc)    
 
     pred_labels = torch.cat(pred_labels).cpu().detach().numpy()
     real_labels = torch.cat(real_labels).cpu().detach().numpy()
@@ -748,10 +756,10 @@ class iBOTLoss(nn.Module):
         student_cls = student_cls / self.student_temp
         student_patch = student_patch / self.student_temp
 
-        # total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+        total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
         # print(total_loss1.detach(), total_loss2.detach())
         # total_loss1, total_loss2 = self._rk_angle_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
-        total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+        # total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
         # print(total_loss1.detach(), total_loss2.detach())
 
         total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2)
@@ -822,9 +830,11 @@ class DataAugmentationiBOT(object):
             crops.append(self.local_transfo(image))
         return crops # List of augmentations
 
-
 if __name__ == '__main__':
+    plot_path = "out/plots/"
     parser = argparse.ArgumentParser('iBOT', parents=[get_args_parser()])
     args = parser.parse_args()
+    if not os.path.isdir(plot_path):
+        os.makedirs(plot_path)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     train_ibot(args)
