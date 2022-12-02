@@ -814,26 +814,29 @@ class iBOTLoss(nn.Module):
         student_cls = student_cls / self.student_temp
         student_patch = student_patch / self.student_temp
         total_loss1, total_loss2 = 0, 0
+        van_loss, dist_loss, ang_loss = {}, {}, {}
         if 'van' in loss_functions:
             van_loss1, van_loss2 = self._vanilla_loss(
                 epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
             total_loss1 += van_loss1
             total_loss2 += van_loss2
-        # print(total_loss1.detach(), total_loss2.detach())
+            van_loss = dict(van_cls=van_loss1, van_patch=van_loss2, van_loss=van_loss1 + van_loss2)
+
         if 'dis' in loss_functions:
             dist_loss1, dist_loss2 = self._rk_angle_loss(
                 epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
             total_loss1 += dist_loss1
             total_loss2 += dist_loss2
-
+            dist_loss = dict(dist_cls=dist_loss1, dist_patch=dist_loss2, dist_loss=dist_loss1 + dist_loss2)
+            
         if 'ang' in loss_functions:
             ang_loss1, ang_loss2 = self._rk_dist_loss(
                 epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
             total_loss1 += ang_loss1
             total_loss2 += ang_loss2
-        # print(total_loss1.detach(), total_loss2.detach())
+            ang_loss = dict(ang_cls=ang_loss1, ang_patch=ang_loss2, ang_loss=ang_loss1 + ang_loss2)
 
-        total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2)
+        total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2, **van_loss, **dist_loss, **ang_loss)
         self.update_center(teacher_cls, teacher_patch)
         return total_loss
 
