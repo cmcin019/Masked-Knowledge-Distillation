@@ -108,7 +108,7 @@ def get_args_parser():
     parser.add_argument('--clip_grad', type=float, default=3.0, help="""Maximal parameter
         gradient norm if using gradient clipping. Clipping with norm .3 ~ 1.0 can
         help optimization for larger ViT architectures. 0 for disabling.""")
-    parser.add_argument('--batch_size_per_gpu', default=16, type=int,
+    parser.add_argument('--batch_size_per_gpu', default=8, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
     parser.add_argument('--epochs', default=20, type=int, help='Number of epochs of training.') # epochs
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
@@ -151,7 +151,7 @@ def get_args_parser():
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int,
                         help="Please ignore and do not set this argument.")
-    parser.add_argument("--loss_functions", default='van', type=str, nargs='*')
+    parser.add_argument("--loss_functions", default=['van'], nargs='*', choices=['van', 'dis', 'ang'])
     return parser
 
 def train_ibot(args):
@@ -396,7 +396,7 @@ def train_ibot(args):
 def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loader,
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, plot_info, args):
-    system('cls' if os.name == 'nt' else 'clear')
+    # system('cls' if os.name == 'nt' else 'clear')
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
 
@@ -836,7 +836,9 @@ class iBOTLoss(nn.Module):
             total_loss2 += ang_loss2
             ang_loss = dict(ang_cls=ang_loss1, ang_patch=ang_loss2, ang_loss=ang_loss1 + ang_loss2)
 
-        total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2, **van_loss, **dist_loss, **ang_loss)
+        total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2)
+        if len(loss_functions)>1:
+            total_loss.update(**van_loss, **dist_loss, **ang_loss)
         self.update_center(teacher_cls, teacher_patch)
         return total_loss
 
