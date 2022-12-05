@@ -29,7 +29,7 @@ from torchvision import models as torchvision_models
 from models.head import iBOTHead
 from loader import ImageFolderMask
 from evaluation.unsupervised.unsup_cls import eval_pred
-
+from evaluation.eval_linear import eval_linear
 
 def get_args_parser():
     parser = argparse.ArgumentParser('iBOT', add_help=False)
@@ -92,7 +92,7 @@ def get_args_parser():
         `--warmup_teacher_temp`""")
     parser.add_argument('--teacher_patch_temp', default=0.07, type=float, help=""""See 
         `--teacher_temp`""")
-    parser.add_argument('--warmup_teacher_temp_epochs', default=0, type=int,
+    parser.add_argument('--warmup_teacher_temp_epochs', default=5, type=int,
         help='Number of warmup epochs for the teacher temperature (Default: 30).')
 
     # Training/Optimization parameters
@@ -108,16 +108,16 @@ def get_args_parser():
     parser.add_argument('--clip_grad', type=float, default=3.0, help="""Maximal parameter
         gradient norm if using gradient clipping. Clipping with norm .3 ~ 1.0 can
         help optimization for larger ViT architectures. 0 for disabling.""")
-    parser.add_argument('--batch_size_per_gpu', default=16, type=int,
+    parser.add_argument('--batch_size_per_gpu', default=8, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
-    parser.add_argument('--epochs', default=20, type=int, help='Number of epochs of training.') # epochs
+    parser.add_argument('--epochs', default=30, type=int, help='Number of epochs of training.') # epochs
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
         during which we keep the output layer fixed. Typically doing so during
         the first epoch helps training. Try increasing this value if the loss does not decrease.""")
     parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
         with the batch size, and specified here for a reference batch size of 256.""")
-    parser.add_argument("--warmup_epochs", default=0, type=int,
+    parser.add_argument("--warmup_epochs", default=5, type=int,
         help="Number of epochs for the linear learning-rate warm up.")
     parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""")
@@ -127,7 +127,7 @@ def get_args_parser():
     parser.add_argument('--drop_path', type=float, default=0.1, help="""Drop path rate for student network.""")
 
     # Multi-crop parameters
-    parser.add_argument('--global_crops_number', type=int, default=4, help="""Number of global
+    parser.add_argument('--global_crops_number', type=int, default=2, help="""Number of global
         views to generate. Default is to use two global crops. """)
     parser.add_argument('--global_crops_scale', type=float, nargs='+', default=(0.14, 1.),
         help="""Scale range of the cropped image before resizing, relatively to the origin image.
@@ -150,6 +150,7 @@ def get_args_parser():
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
+    parser.add_argument("--loss_functions", default='van', type=str, nargs='*', help="van ,dis, ang, sim")
     return parser
 
 def train_ibot(args):
@@ -347,7 +348,7 @@ def train_ibot(args):
 
     start_time = time.time()
     print("Starting iBOT training!")
-    plot_info = {'loss': [], 'acc': [], 'title':['Vanilla']}
+    plot_info = {'loss': [], 'acc': [], 'title':[*args.loss_functions]}
     for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
         data_loader.dataset.set_epoch(epoch)
@@ -368,7 +369,7 @@ def train_ibot(args):
         }
         if fp16_scaler is not None:
             save_dict['fp16_scaler'] = fp16_scaler.state_dict()
-        utils.save_on_master(save_dict, os.path.join(args.output_dir, 'checkpoint.pth'))
+        utils.save_on_master(save_dict, os.path.join(args.output_dir, f'checkpoint_{args.loss_functions}.pth'))
         if args.saveckp_freq and (epoch % args.saveckp_freq == 0) and epoch:
             utils.save_on_master(save_dict, os.path.join(args.output_dir, f'checkpoint{epoch:04}.pth'))
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
@@ -387,6 +388,8 @@ def train_ibot(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+
+    # eval_linear()
 
 
 def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loader,
@@ -431,9 +434,10 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
             student_local_cls = student(images[args.global_crops_number:])[0] if len(images) > args.global_crops_number else None
             student.module.backbone.masked_im_modeling = args.use_masked_im_modeling
 
-            all_loss = ibot_loss(student_output, teacher_output, student_local_cls, masks, epoch)
+            all_loss = ibot_loss(args.loss_functions, student_output, teacher_output, student_local_cls, masks, epoch)
             loss = all_loss.pop('loss')
-            plot_info['loss'].append(loss.item())
+            if it % 200 == 0:
+                plot_info['loss'].append(loss.item())
         
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
@@ -445,7 +449,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
         pred1 = utils.concat_all_gather(probs1[0].max(dim=1)[1]) 
         pred2 = utils.concat_all_gather(probs2[1].max(dim=1)[1])
         acc = (pred1 == pred2).sum() / pred1.size(0)
-        plot_info['acc'].append(acc.item())
+        if it % 200 == 0:
+            plot_info['acc'].append(acc.item())
         pred_labels.append(pred1)
         real_labels.append(utils.concat_all_gather(labels.to(pred1.device)))
 
@@ -482,7 +487,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
             metric_logger.update(**{key: value.item()})
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
-        metric_logger.update(acc=acc)    
+        metric_logger.update(acc=acc) 
 
     pred_labels = torch.cat(pred_labels).cpu().detach().numpy()
     real_labels = torch.cat(real_labels).cpu().detach().numpy()
@@ -733,11 +738,147 @@ class iBOTLoss(nn.Module):
 
 
         return total_loss1, total_loss2
-        
-    def _rk_angle_loss(self, epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask):
-        pass
+    
+    def angle(self, e):
+        res = (e.unsqueeze(0) - e.unsqueeze(1))
+        norm_res = F.normalize(res, p=2, dim=2)
+        res_angle = torch.bmm(norm_res, norm_res.transpose(1, 2))
+        return res_angle
 
-    def forward(self, student_output, teacher_output, student_local_cls, student_mask, epoch):
+    def _rk_angle_loss(self, epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask):
+        # [CLS] and patch for global patches
+        student_cls = student_cls / self.student_temp
+        student_cls_c = student_cls.chunk(self.ncrops)
+        student_patch = student_patch / self.student_temp
+        student_patch_c = student_patch.chunk(self.ngcrops)
+
+        temp = self.teacher_temp_schedule[epoch]
+        temp2 = self.teacher_temp2_schedule[epoch]
+        teacher_cls_c = F.softmax((teacher_cls - self.center) / temp, dim=-1)
+
+        # torch.Size([64, 8192])
+        # print(teacher_cls_c.shape)
+
+        teacher_cls_c = teacher_cls_c.detach().chunk(self.ngcrops)
+        # print(teacher_cls_c[0] == teacher_cls_c[1])
+        teacher_patch_c = F.softmax(
+            (teacher_patch - self.center2) / temp2, dim=-1)
+        teacher_patch_c = teacher_patch_c.detach().chunk(self.ngcrops)
+
+        total_loss1, n_loss_terms1 = 0, 0
+        total_loss2, n_loss_terms2 = 0, 0
+
+        # TODO: Method combining all
+        s_cls_d = self.angle(student_cls)
+        s_patch_d = self.angle(student_patch.view(student_patch.size(0), -1))
+        s_mask = torch.stack(student_mask, dim=0).view(
+            len(student_mask) * student_mask[0].shape[0], -1)
+        # This does not make sense
+        s_mask_d = self.angle(s_mask.float())
+
+        t_cls_d = self.angle(teacher_cls)
+        t_patch_d = self.angle(teacher_patch.view(teacher_patch.size(0), -1))
+
+        total_loss1 = torch.sum(-t_cls_d * F.log_softmax(s_cls_d, dim=-1),
+                                dim=-1).mean() / (len(student_mask) * len(student_mask))
+        loss2 = torch.sum(-t_patch_d *
+                          F.log_softmax(s_patch_d, dim=-1), dim=-1)
+
+        total_loss2 = torch.sum(loss2 * s_mask_d.float(),
+                                dim=-1) / s_mask_d.sum(dim=-1).clamp(min=1.0)
+        total_loss2 = total_loss2.mean() / (len(student_mask) * len(student_mask))
+
+        # print(total_loss1)
+        # print(total_loss2)
+
+        # print(teacher_cls)
+        # print(student_cls)
+        # print(t_cls_d)
+        # print(s_cls_d)
+
+        # print(total_loss1)
+        # print(total_loss2)
+
+        return total_loss1, total_loss2
+        
+
+    # From https://github.com/lenscloth/RKD/blob/0a6c3c0c190722d428322bf71703c0ae86c25242/metric/utils.py#L6
+    def psim(self, e, eps=1e-12):
+        e_sum = e.sum(dim=1)
+        e = F.normalize(e, p=2, dim=-1)
+        prod = e @ e.t()
+        # print(e_sum.shape, prod.shape)
+        dot_prod = F.cosine_similarity(e_sum, 2 * prod)
+        # print(dot_prod.shape)
+        dist = dot_prod.clamp(min=eps)
+        # print(dist.shape)
+        dist = dist.clone()
+        dist[range(len(e)), range(len(e))] = 0
+
+        mean_td = dist[dist>0].mean()
+        dist= dist / mean_td
+
+        return dist
+
+
+    def _rk_sim_loss(self, epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask):
+        # [CLS] and patch for global patches
+        student_cls = student_cls / self.student_temp
+        student_cls_c = student_cls.chunk(self.ncrops)
+        student_patch = student_patch / self.student_temp
+        student_patch_c = student_patch.chunk(self.ngcrops)
+
+        temp = self.teacher_temp_schedule[epoch]
+        temp2 = self.teacher_temp2_schedule[epoch]
+        teacher_cls_c = F.softmax((teacher_cls - self.center) / temp, dim=-1)
+
+        # torch.Size([64, 8192])
+        # print(teacher_cls_c.shape)
+
+        teacher_cls_c = teacher_cls_c.detach().chunk(self.ngcrops)
+        # print(teacher_cls_c[0] == teacher_cls_c[1])
+        teacher_patch_c = F.softmax(
+            (teacher_patch - self.center2) / temp2, dim=-1)
+        teacher_patch_c = teacher_patch_c.detach().chunk(self.ngcrops)
+
+        total_loss1, n_loss_terms1 = 0, 0
+        total_loss2, n_loss_terms2 = 0, 0
+
+        # TODO: Method combining all
+        s_cls_d = self.psim(student_cls)
+        s_patch_d = self.psim(student_patch.view(student_patch.size(0), -1))
+        s_mask = torch.stack(student_mask, dim=0).view(
+            len(student_mask) * student_mask[0].shape[0], -1)
+        # This does not make sense
+        s_mask_d = self.psim(s_mask.float())
+
+        t_cls_d = self.psim(teacher_cls)
+        t_patch_d = self.psim(teacher_patch.view(teacher_patch.size(0), -1))
+
+        total_loss1 = torch.sum(-t_cls_d * F.log_softmax(s_cls_d, dim=-1),
+                                dim=-1).mean() / (len(student_mask) * len(student_mask))
+        loss2 = torch.sum(-t_patch_d *
+                          F.log_softmax(s_patch_d, dim=-1), dim=-1)
+
+        total_loss2 = torch.sum(loss2 * s_mask_d.float(),
+                                dim=-1) / s_mask_d.sum(dim=-1).clamp(min=1.0)
+        total_loss2 = total_loss2.mean() / (len(student_mask) * len(student_mask))
+
+        # print(total_loss1)
+        # print(total_loss2)
+
+        # print(teacher_cls)
+        # print(student_cls)
+        # print(t_cls_d)
+        # print(s_cls_d)
+
+        # print(total_loss1)
+        # print(total_loss2)
+
+        return total_loss1, total_loss2
+
+
+    def forward(self, loss_functions, student_output, teacher_output, student_local_cls, student_mask, epoch):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
@@ -756,13 +897,43 @@ class iBOTLoss(nn.Module):
         student_cls = student_cls / self.student_temp
         student_patch = student_patch / self.student_temp
 
-        total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
-        # print(total_loss1.detach(), total_loss2.detach())
-        # total_loss1, total_loss2 = self._rk_angle_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
-        # total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
-        # print(total_loss1.detach(), total_loss2.detach())
+        # total_loss1, total_loss2 = self._vanilla_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+        # # print(total_loss1.detach(), total_loss2.detach())
+        # # total_loss1, total_loss2 = self._rk_angle_loss(epoch, teacher_cls, teacher_patch, student_cls_c, student_patch_c, student_mask)
+        # # total_loss1, total_loss2 = self._rk_dist_loss(epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+        
+        total_loss1, total_loss2 = 0, 0
+        van_loss, dist_loss, ang_loss, sim_loss = {}, {}, {}, {}
+        if 'van' in loss_functions:
+            van_loss1, van_loss2 = self._vanilla_loss(
+                epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+            total_loss1 += van_loss1
+            total_loss2 += van_loss2
+            van_loss = dict(van_cls=van_loss1, van_patch=van_loss2, van_loss=van_loss1 + van_loss2)
 
-        total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2)
+        if 'dis' in loss_functions:
+            dist_loss1, dist_loss2 = self._rk_dist_loss(
+                epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+            total_loss1 += dist_loss1
+            total_loss2 += dist_loss2
+            dist_loss = dict(dist_cls=dist_loss1, dist_patch=dist_loss2, dist_loss=dist_loss1 + dist_loss2)
+
+        if 'ang' in loss_functions:
+            ang_loss1, ang_loss2 = self._rk_angle_loss(
+                epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+            total_loss1 += ang_loss1
+            total_loss2 += ang_loss2
+            ang_loss = dict(ang_cls=ang_loss1, ang_patch=ang_loss2, ang_loss=ang_loss1 + ang_loss2)
+        
+        if 'sim' in loss_functions:
+            sim_loss1, sim_loss2 = self._rk_sim_loss(
+                epoch, teacher_cls, teacher_patch, student_cls, student_patch, student_mask)
+            total_loss1 += sim_loss1
+            total_loss2 += sim_loss2
+            sim_loss = dict(sim_cls=sim_loss1, sim_patch=sim_loss2, sim_loss=sim_loss1 + sim_loss2)
+
+        # total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2)
+        total_loss = dict(cls=total_loss1, patch=total_loss2, loss=total_loss1 + total_loss2, **van_loss, **dist_loss, **ang_loss, ** sim_loss)
         self.update_center(teacher_cls, teacher_patch)                  
         return total_loss
 
@@ -799,14 +970,14 @@ class DataAugmentationiBOT(object):
         self.global_crops_number = global_crops_number
         # transformation for the first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(64, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(1.0),
             normalize,
         ])
         # transformation for the rest of global crops
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(64, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(0.1),
             utils.Solarization(0.2),
@@ -831,6 +1002,7 @@ class DataAugmentationiBOT(object):
         return crops # List of augmentations
 
 if __name__ == '__main__':
+    torch.cuda.empty_cache()
     plot_path = "out/plots/"
     parser = argparse.ArgumentParser('iBOT', parents=[get_args_parser()])
     args = parser.parse_args()
