@@ -40,7 +40,7 @@ def get_args_parser():
                  'swin_tiny','swin_small', 'swin_base', 'swin_large'],
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
-    parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
+    parser.add_argument('--patch_size', default=4, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
@@ -92,7 +92,7 @@ def get_args_parser():
         `--warmup_teacher_temp`""")
     parser.add_argument('--teacher_patch_temp', default=0.07, type=float, help=""""See 
         `--teacher_temp`""")
-    parser.add_argument('--warmup_teacher_temp_epochs', default=5, type=int,
+    parser.add_argument('--warmup_teacher_temp_epochs', default=7, type=int,
         help='Number of warmup epochs for the teacher temperature (Default: 30).')
 
     # Training/Optimization parameters
@@ -108,16 +108,16 @@ def get_args_parser():
     parser.add_argument('--clip_grad', type=float, default=3.0, help="""Maximal parameter
         gradient norm if using gradient clipping. Clipping with norm .3 ~ 1.0 can
         help optimization for larger ViT architectures. 0 for disabling.""")
-    parser.add_argument('--batch_size_per_gpu', default=8, type=int,
+    parser.add_argument('--batch_size_per_gpu', default=64, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
-    parser.add_argument('--epochs', default=30, type=int, help='Number of epochs of training.') # epochs
+    parser.add_argument('--epochs', default=20, type=int, help='Number of epochs of training.') # epochs
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
         during which we keep the output layer fixed. Typically doing so during
         the first epoch helps training. Try increasing this value if the loss does not decrease.""")
     parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
         with the batch size, and specified here for a reference batch size of 256.""")
-    parser.add_argument("--warmup_epochs", default=5, type=int,
+    parser.add_argument("--warmup_epochs", default=3, type=int,
         help="Number of epochs for the linear learning-rate warm up.")
     parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""")
@@ -141,7 +141,7 @@ def get_args_parser():
         Used for small local view cropping of multi-crop.""")
 
     # Misc
-    parser.add_argument('--data_path', default='./data/CIFAR10', type=str,
+    parser.add_argument('--data_path', default='./data/CIFAR10/imagenet32/res', type=str,
         help='Please specify path to the ImageNet training data.')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=40, type=int, help='Save checkpoint every x epochs.')
@@ -176,7 +176,16 @@ def train_ibot(args):
         pred_ratio_var=args.pred_ratio_var,
         pred_aspect_ratio=(0.3, 1/0.3),
         pred_shape=args.pred_shape,
-        pred_start_epoch=args.pred_start_epoch)
+        pred_start_epoch=args.pred_start_epoch) if args.data_path == './data/CIFAR10' else ImageFolderMask(
+            args.data_path,
+            transform=transform,
+            patch_size=pred_size,
+            pred_ratio=args.pred_ratio,
+            pred_ratio_var=args.pred_ratio_var,
+            pred_aspect_ratio=(0.3, 1/0.3),
+            pred_shape=args.pred_shape,
+            pred_start_epoch=args.pred_start_epoch)
+
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -185,7 +194,7 @@ def train_ibot(args):
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True
-    )
+    ) 
     print(f"Data loaded: there are {len(dataset)} images.")
 
     # ============ building student and teacher networks ... ============
@@ -375,7 +384,7 @@ def train_ibot(args):
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch}
         if utils.is_main_process():
-            with (Path(args.output_dir) / "log.txt").open("a") as f:
+            with (Path(args.output_dir) / f"logs/{args.loss_functions}/log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
                 # for k, v in train_stats.items():
                 #     writer.add_scalar(k, v, epoch)
@@ -970,35 +979,26 @@ class DataAugmentationiBOT(object):
         self.global_crops_number = global_crops_number
         # transformation for the first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(64, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(1.0),
             normalize,
         ])
         # transformation for the rest of global crops
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(64, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(32, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(0.1),
             utils.Solarization(0.2),
             normalize,
         ])
-        # transformation for the local crops
-        self.local_crops_number = local_crops_number
-        self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(16, scale=local_crops_scale, interpolation=Image.BICUBIC),
-            flip_and_color_jitter,
-            utils.GaussianBlur(p=0.5),
-            normalize,
-        ])
+
 
     def __call__(self, image):
         crops = []
         crops.append(self.global_transfo1(image))
         for _ in range(self.global_crops_number - 1):
             crops.append(self.global_transfo2(image))
-        for _ in range(self.local_crops_number):
-            crops.append(self.local_transfo(image))
         return crops # List of augmentations
 
 if __name__ == '__main__':

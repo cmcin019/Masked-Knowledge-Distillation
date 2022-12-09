@@ -14,7 +14,7 @@ from torchvision import transforms as pth_transforms
 
 from models import VisionTransformer, vit_tiny, vit_small, vit_base, vit_large
 
-loss_type = 'ang'
+loss_type = 'dis'
 model_path = f"checkpoint_['{loss_type}'].pth"
 
 state_dict = torch.load(model_path)['student']

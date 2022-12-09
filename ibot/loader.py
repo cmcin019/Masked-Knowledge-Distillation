@@ -8,14 +8,17 @@ import random
 import math
 import numpy as np
 
-from torchvision.datasets import ImageFolder, CIFAR10
+from torchvision.datasets.folder import default_loader
+
+from torchvision.datasets import ImageFolder
+from torchvision.datasets import CIFAR10 as CIFAR
 
 class ImageFolderInstance(ImageFolder):
     def __getitem__(self, index):
         img, target = super(ImageFolderInstance, self).__getitem__(index)
         return img, target, index
 
-class ImageFolderMask(CIFAR10):
+class ImageFolderMask(ImageFolder):
     def __init__(self, *args, patch_size, pred_ratio, pred_ratio_var, pred_aspect_ratio, 
                  pred_shape='block', pred_start_epoch=0, **kwargs):
         super(ImageFolderMask, self).__init__(*args, **kwargs)
