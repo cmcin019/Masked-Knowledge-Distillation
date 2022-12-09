@@ -11,6 +11,7 @@ import sys
 import datetime
 import time
 import math
+import matplotlib.pyplot as plt
 import json
 import numpy as np
 import utils
@@ -40,7 +41,7 @@ def get_args_parser():
                  'swin_tiny','swin_small', 'swin_base', 'swin_large'],
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
-    parser.add_argument('--patch_size', default=4, type=int, help="""Size in pixels
+    parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
@@ -92,7 +93,7 @@ def get_args_parser():
         `--warmup_teacher_temp`""")
     parser.add_argument('--teacher_patch_temp', default=0.07, type=float, help=""""See 
         `--teacher_temp`""")
-    parser.add_argument('--warmup_teacher_temp_epochs', default=7, type=int,
+    parser.add_argument('--warmup_teacher_temp_epochs', default=0, type=int,
         help='Number of warmup epochs for the teacher temperature (Default: 30).')
 
     # Training/Optimization parameters
@@ -110,14 +111,14 @@ def get_args_parser():
         help optimization for larger ViT architectures. 0 for disabling.""")
     parser.add_argument('--batch_size_per_gpu', default=64, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
-    parser.add_argument('--epochs', default=20, type=int, help='Number of epochs of training.') # epochs
+    parser.add_argument('--epochs', default=5, type=int, help='Number of epochs of training.') # epochs
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
         during which we keep the output layer fixed. Typically doing so during
         the first epoch helps training. Try increasing this value if the loss does not decrease.""")
     parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
         with the batch size, and specified here for a reference batch size of 256.""")
-    parser.add_argument("--warmup_epochs", default=3, type=int,
+    parser.add_argument("--warmup_epochs", default=0, type=int,
         help="Number of epochs for the linear learning-rate warm up.")
     parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""")
@@ -154,11 +155,11 @@ def get_args_parser():
     return parser
 
 def train_ibot(args):
-    utils.init_distributed_mode(args)
-    utils.fix_random_seeds(args.seed)
-    print("git:\n  {}\n".format(utils.get_sha()))
-    print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
-    cudnn.benchmark = True
+    # utils.init_distributed_mode(args)
+    # utils.fix_random_seeds(args.seed)
+    # print("git:\n  {}\n".format(utils.get_sha()))
+    # print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
+    # cudnn.benchmark = True
 
     # ============ preparing data ... ============
     transform = DataAugmentationiBOT(
@@ -397,6 +398,8 @@ def train_ibot(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+
+    return plot_info
 
     # eval_linear()
 
@@ -1009,4 +1012,30 @@ if __name__ == '__main__':
     if not os.path.isdir(plot_path):
         os.makedirs(plot_path)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    train_ibot(args)
+    utils.init_distributed_mode(args)
+    utils.fix_random_seeds(args.seed)
+    print("git:\n  {}\n".format(utils.get_sha()))
+    print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
+    cudnn.benchmark = True
+    if args.loss_functions == ['test']:
+        fig_loss, ax_loss = plt.subplots()
+        fig_acc, ax_acc = plt.subplots()
+        for x in [(['van'],128),(['dis'],128),(['ang'],16)]:
+            torch.cuda.empty_cache()
+            args.loss_functions = x[0]
+            args.batch_size_per_gpu = x[1]
+            plot_info_ = train_ibot(args)
+            ax_loss.plot([n*200 for n in range(len(plot_info_['loss']))], plot_info_['loss'], label=x[0][0])
+            ax_acc.plot([n*200 for n in range(len(plot_info_['acc']))], plot_info_['acc'], label=x[0][0])
+            # dist.destroy_process_group()
+        ax_loss.legend()
+        ax_acc.legend()
+        ax_loss.set_title('All_Loss')
+        ax_acc.set_title('All_Accuracy')
+        ax_loss.set(xlabel='Iterations', ylabel='Loss')
+        ax_acc.set(xlabel='Iterations', ylabel='Loss')
+        fig_loss.savefig( f"{plot_path}{'all_loss'}.png", bbox_inches='tight', dpi=150)
+        fig_acc.savefig( f"{plot_path}{'all_accuracy'}.png", bbox_inches='tight', dpi=150)
+        plt.close()
+    else:
+        _ = train_ibot(args)
