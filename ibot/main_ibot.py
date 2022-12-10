@@ -424,6 +424,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
     params_k = [param_k for name_k, param_k in zip(names_k, params_k) if name_k in names_common]
 
     pred_labels, real_labels = [], []
+    _loss = 0
+    _acc = 0
     for it, (images, labels, masks) in enumerate(metric_logger.log_every(data_loader, 10, header)):
         # update weight decay and learning rate according to their schedule
         it = len(data_loader) * epoch + it  # global training iteration
@@ -448,8 +450,9 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
 
             all_loss = ibot_loss(args.loss_functions, student_output, teacher_output, student_local_cls, masks, epoch)
             loss = all_loss.pop('loss')
-            if it % 200 == 0:
-                plot_info['loss'].append(loss.item())
+            # if it % 200 == 0:
+            #     plot_info['loss'].append(loss.item())
+            _loss += loss.item()
         
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
@@ -461,8 +464,9 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
         pred1 = utils.concat_all_gather(probs1[0].max(dim=1)[1]) 
         pred2 = utils.concat_all_gather(probs2[1].max(dim=1)[1])
         acc = (pred1 == pred2).sum() / pred1.size(0)
-        if it % 200 == 0:
-            plot_info['acc'].append(acc.item())
+        # if it % 200 == 0:
+        #     plot_info['acc'].append(acc.item())
+        _acc = acc.item()
         pred_labels.append(pred1)
         real_labels.append(utils.concat_all_gather(labels.to(pred1.device)))
 
@@ -501,6 +505,10 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, data_loade
         metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
         metric_logger.update(acc=acc) 
 
+
+    plot_info['loss'].append(_loss/len(data_loader))
+    plot_info['acc'].append(_acc/len(data_loader))
+    
     pred_labels = torch.cat(pred_labels).cpu().detach().numpy()
     real_labels = torch.cat(real_labels).cpu().detach().numpy()
     nmi, ari, fscore, adjacc = eval_pred(real_labels, pred_labels, calc_acc=False)
@@ -1025,15 +1033,15 @@ if __name__ == '__main__':
             args.loss_functions = x[0]
             args.batch_size_per_gpu = x[1]
             plot_info_ = train_ibot(args)
-            ax_loss.plot([n*200 for n in range(len(plot_info_['loss']))], plot_info_['loss'], label=x[0][0])
-            ax_acc.plot([n*200 for n in range(len(plot_info_['acc']))], plot_info_['acc'], label=x[0][0])
+            ax_loss.plot([n for n in range(len(plot_info_['loss']))], plot_info_['loss'], label=x[0][0])
+            ax_acc.plot([n for n in range(len(plot_info_['acc']))], plot_info_['acc'], label=x[0][0])
             # dist.destroy_process_group()
         ax_loss.legend()
         ax_acc.legend()
         ax_loss.set_title('All_Loss')
         ax_acc.set_title('All_Accuracy')
         ax_loss.set(xlabel='Iterations', ylabel='Loss')
-        ax_acc.set(xlabel='Iterations', ylabel='Loss')
+        ax_acc.set(xlabel='Iterations', ylabel='Accuracy')
         fig_loss.savefig( f"{plot_path}{'all_loss'}.png", bbox_inches='tight', dpi=150)
         fig_acc.savefig( f"{plot_path}{'all_accuracy'}.png", bbox_inches='tight', dpi=150)
         plt.close()

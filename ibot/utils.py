@@ -109,9 +109,9 @@ class HideAndSeek(object):
         # img.save('test2.png')
         return img
 
-def save_plot(plot_list, path, ylabel, title, xlabel='Iterations', label=''):
+def save_plot(plot_list, path, ylabel, title, xlabel='Epochs', label=''):
 	fig, ax = plt.subplots()
-	ax.plot([n*200 for n in range(len(plot_list))], plot_list, label=None if label == '' else label)
+	ax.plot([n for n in range(len(plot_list))], plot_list, label=None if label == '' else label)
 	ax.legend()
 	ax.set_title(title)
 	ax.set(xlabel=xlabel, ylabel=ylabel)
